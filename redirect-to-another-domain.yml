@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Redirect domain.net to domain.com with HTTPS
+
+Parameters:
+  SourceDomainName:
+    Type: String
+    Description: The source domain name (e.g., domain.net)
+  DestinationDomainName:
+    Type: String
+    Description: The destination domain name (e.g., domain.com)
+  HostedZoneId:
+    Type: String
+    Description: The Route 53 Hosted Zone ID for the SourceDomainName
+
+Resources:
+  RedirectBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${SourceDomainName}"
+      WebsiteConfiguration:
+        RedirectAllRequestsTo:
+          HostName: !Ref DestinationDomainName
+          Protocol: https
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref SourceDomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref SourceDomainName
+          HostedZoneId: !Ref HostedZoneId
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases:
+          - !Ref SourceDomainName
+        Origins:
+          - Id: S3-RedirectOrigin
+            DomainName: !Select [1, !Split ["http://", !GetAtt RedirectBucket.WebsiteURL]]
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: S3-RedirectOrigin
+          ForwardedValues:
+            QueryString: false
+          ViewerProtocolPolicy: redirect-to-https
+        Comment: !Sub "Redirect ${SourceDomainName} to ${DestinationDomainName}"
+        Enabled: true
+        ViewerCertificate:
+          AcmCertificateArn: !Ref Certificate
+          SslSupportMethod: sni-only
+  Route53Record:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      RecordSets:
+        - Name: !Ref SourceDomainName
+          Type: A
+          AliasTarget:
+            DNSName: !GetAtt CloudFrontDistribution.DomainName
+            HostedZoneId: Z2FDTNDATAQYW2 # CloudFront's Hosted Zone ID
+          Weight: 1
+          SetIdentifier: "Redirect"
+Outputs:
+  CertificateArn:
+    Value: !Ref Certificate
+    Export:
+      Name: !Sub "${AWS::StackName}-CertificateArn"
+  DomainName:
+    Description: The CloudFront Distribution DNS name for the redirect
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  CloudFrontDistributionID:
+    Description: The CloudFront Distribution ID for the redirect
+    Value: !Ref CloudFrontDistribution
